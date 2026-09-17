@@ -1,0 +1,11 @@
+node_modules
+CastleApi/bin
+CastleApi/obj
+.git
+.agents
+__pycache__
+*.pyc
+log.txt
+results.txt
+token.txt
+auth_results.json

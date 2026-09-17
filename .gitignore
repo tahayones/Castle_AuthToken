@@ -1,0 +1,14 @@
+node_modules/
+CastleApi/bin/
+CastleApi/obj/
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+log.txt
+results.txt
+token.txt
+auth_results.json
+accounts.txt
+proxy.txt
+castle_token.txt
