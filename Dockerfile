@@ -29,12 +29,13 @@ RUN npm install --omit=dev
 COPY castle_engine_final.js castle_cdn_sdk.js auth_token.py single_account_runner.py ./
 RUN touch proxy.txt accounts.txt
 
-ENV ASPNETCORE_URLS=http://+:8000
-ENV PORT=8000
+ENV ASPNETCORE_URLS=http://+:8080;http://+:8000
+ENV PORT=8080
 ENV Scripts__ScriptsDirectory=/app
 ENV Scripts__NodeExecutable=node
 ENV Scripts__PythonExecutable=python3
 
+EXPOSE 8080
 EXPOSE 8000
 
 ENTRYPOINT ["dotnet", "CastleApi.dll"]
