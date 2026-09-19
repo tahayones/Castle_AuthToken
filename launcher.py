@@ -11,7 +11,14 @@ from pathlib import Path
 BASE = Path(__file__).parent
 
 def start_server():
-    proc = subprocess.Popen(
+    worker_proc = subprocess.Popen(
+        ["node", str(BASE / "castle_worker.js")],
+        cwd=str(BASE),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    server_proc = subprocess.Popen(
         [sys.executable, str(BASE / "server.py")],
         cwd=str(BASE),
         stdout=subprocess.DEVNULL,
@@ -21,11 +28,12 @@ def start_server():
         try:
             with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=1) as r:
                 if r.status == 200:
-                    return proc
+                    return server_proc, worker_proc
         except Exception:
             time.sleep(0.5)
-    proc.terminate()
-    return None
+    server_proc.terminate()
+    worker_proc.terminate()
+    return None, None
 
 def start_tunnel():
     try:
@@ -91,7 +99,7 @@ def start_tunnel():
 
 def main():
     print("[*] Starting local API server...")
-    server_proc = start_server()
+    server_proc, worker_proc = start_server()
     if not server_proc:
         print("[ERROR] Could not start local server on port 8000.")
         return
@@ -101,6 +109,7 @@ def main():
     if not tunnel_proc or not public_url:
         print("[ERROR] Failed to establish public tunnel.")
         server_proc.terminate()
+        worker_proc.terminate()
         return
 
     def drain():
@@ -159,6 +168,7 @@ def main():
     finally:
         tunnel_proc.terminate()
         server_proc.terminate()
+        worker_proc.terminate()
 
 if __name__ == "__main__":
     main()

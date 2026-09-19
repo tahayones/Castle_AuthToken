@@ -73,11 +73,32 @@ class TwitterAuthResponse(BaseModel):
     twid: str | None = None
     errorMessage: str | None = None
 
+def _call_worker(ip: str | None) -> str:
+    import json
+    import urllib.request
+    payload = json.dumps({"ip": ip}).encode("utf-8")
+    req = urllib.request.Request(
+        "http://127.0.0.1:8001/android/twitter/castle",
+        data=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+        data = json.loads(res.read().decode("utf-8"))
+        token = data.get("token")
+        if not token or len(token) < 50:
+            raise ValueError("Invalid token from worker")
+        return token
+
 async def generate(ip: str | None) -> str:
-    cmd = ["node", str(ENGINE), "1", "--stdout"]
-    if ip:
-        cmd.append(f"--ip={ip}")
     async with _sem:
+        try:
+            return await asyncio.to_thread(_call_worker, ip)
+        except Exception:
+            pass
+
+        cmd = ["node", str(ENGINE), "1", "--stdout"]
+        if ip:
+            cmd.append(f"--ip={ip}")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -93,11 +114,11 @@ async def generate(ip: str | None) -> str:
         except FileNotFoundError:
             raise HTTPException(503, "Service unavailable")
 
-    token = (stdout.decode("utf-8", errors="replace").splitlines() or [""])[0].strip()
-    if not token or len(token) < 50:
-        err_msg = stderr.decode("utf-8", errors="replace").strip()
-        raise HTTPException(500, f"Failed to generate token: {err_msg}")
-    return token
+        token = (stdout.decode("utf-8", errors="replace").splitlines() or [""])[0].strip()
+        if not token or len(token) < 50:
+            err_msg = stderr.decode("utf-8", errors="replace").strip()
+            raise HTTPException(500, f"Failed to generate token: {err_msg}")
+        return token
 
 def _execute_twitter_login(username: str, password: str, totp: str | None, proxy: str | None):
     from auth_token import login, proxy_pool

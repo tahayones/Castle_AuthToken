@@ -41,7 +41,7 @@ function makeDeviceProfile() {
   const heapTotal = heapUsed + rand(20, 60) * 1e6;
   return { sw, sh, taskbar, gpu, chromeVer, cores, mem, tzOffset, canvasNoise, audioNoise, heapUsed, heapTotal };
 }
-async function createCastleInstance(sdkCode) {
+async function createCastleInstance(sdkCode, customIP = null) {
   const vc = new VirtualConsole();
   vc.on("jsdomError", () => {});
   vc.on("error",      () => {});
@@ -294,7 +294,7 @@ async function createCastleInstance(sdkCode) {
   win.fetch       = () => Promise.resolve({ ok:false, status:0, json:()=>Promise.resolve({}), text:()=>Promise.resolve(""), headers:{get:()=>null} });
   win.matchMedia  = () => ({ matches:false, addListener(){}, removeListener(){}, addEventListener(){}, media:"" });
   win.visualViewport = { width:dev.sw, height:innerH, scale:1, offsetLeft:0, offsetTop:0, addEventListener(){} };
-  const targetIP = PROXY_IP || `${rand(1,254)}.${rand(1,254)}.${rand(1,254)}.${rand(1,254)}`;
+  const targetIP = customIP || PROXY_IP || `${rand(1,254)}.${rand(1,254)}.${rand(1,254)}.${rand(1,254)}`;
   win.RTCPeerConnection = class {
     constructor() {
       this._handlers = {};
@@ -391,4 +391,8 @@ async function main() {
   }
   if (fail > 0 && ok === 0) process.exit(1);
 }
-main().catch(e => { process.stderr.write(`Fatal: ${e.stack}\n`); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { process.stderr.write(`Fatal: ${e.stack}\n`); process.exit(1); });
+} else {
+  module.exports = { createCastleInstance, generateToken };
+}
