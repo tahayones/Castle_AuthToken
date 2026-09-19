@@ -52,16 +52,4 @@ if not exist cloudflared.exe (
     curl.exe -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o cloudflared.exe
 )
 
-echo [INFO] Starting Castle Token API server on port 8000...
-start "Castle API Server" /B python server.py
-
-timeout /t 3 /nobreak >nul
-
-echo.
-echo ========================================================
-echo   Connecting Cloudflare Public HTTPS Tunnel...
-echo   Your public URL will appear below:
-echo ========================================================
-echo.
-
-cloudflared.exe tunnel --url http://localhost:8000
+python launcher.py
