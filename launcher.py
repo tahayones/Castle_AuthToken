@@ -5,39 +5,68 @@ import time
 import urllib.request
 import webbrowser
 import subprocess
+import threading
 from pathlib import Path
 
 BASE = Path(__file__).parent
 
-def main():
-    server_proc = subprocess.Popen(
+def start_server():
+    proc = subprocess.Popen(
         [sys.executable, str(BASE / "server.py")],
         cwd=str(BASE),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    
-    server_ready = False
     for _ in range(30):
         try:
-            with urllib.request.urlopen("http://localhost:8000/health", timeout=1) as r:
+            with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=1) as r:
                 if r.status == 200:
-                    server_ready = True
-                    break
+                    return proc
         except Exception:
             time.sleep(0.5)
-            
-    if not server_ready:
-        print("[ERROR] Failed to start local API server.")
-        server_proc.terminate()
-        return
+    proc.terminate()
+    return None
 
+def start_tunnel():
+    try:
+        ssh_proc = subprocess.Popen(
+            [
+                "ssh.exe",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "ServerAliveInterval=30",
+                "-o", "ServerAliveCountMax=3",
+                "-R", "80:127.0.0.1:8000",
+                "serveo.net"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        url = None
+        for _ in range(25):
+            line = ssh_proc.stdout.readline()
+            if not line:
+                break
+            m = re.search(r"https://[a-zA-Z0-9-]+\.serveousercontent\.com", line)
+            if m:
+                url = m.group(0)
+                break
+        if url:
+            return ssh_proc, url
+        ssh_proc.terminate()
+    except Exception:
+        pass
+
+    cf_exe = BASE / "cloudflared.exe"
     cf_proc = subprocess.Popen(
         [
-            str(BASE / "cloudflared.exe"),
-            "tunnel",
+            str(cf_exe), "tunnel",
+            "--config", "NUL",
+            "--edge-ip-version", "4",
             "--protocol", "http2",
-            "--url", "http://localhost:8000"
+            "--url", "http://127.0.0.1:8000"
         ],
         cwd=str(BASE),
         stdout=subprocess.PIPE,
@@ -46,42 +75,42 @@ def main():
         encoding="utf-8",
         errors="replace"
     )
-
-    tunnel_url = None
-    
-    for line in iter(cf_proc.stdout.readline, ""):
-        if not tunnel_url:
-            m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
-            if m:
-                tunnel_url = m.group(0)
-                print(f"[+] Tunnel URL generated: {tunnel_url}")
-                print("[*] Connecting to Cloudflare Edge...")
-        
-        if "Registered tunnel connection" in line or "connIndex=0" in line:
+    url = None
+    for _ in range(30):
+        line = cf_proc.stdout.readline()
+        if not line:
             break
-            
-    if not tunnel_url:
-        print("[ERROR] Could not obtain Cloudflare tunnel URL.")
-        cf_proc.terminate()
+        m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+        if m:
+            url = m.group(0)
+            break
+    if url:
+        return cf_proc, url
+    cf_proc.terminate()
+    return None, None
+
+def main():
+    print("[*] Starting local API server...")
+    server_proc = start_server()
+    if not server_proc:
+        print("[ERROR] Could not start local server on port 8000.")
+        return
+
+    print("[*] Establishing secure public HTTPS tunnel...")
+    tunnel_proc, public_url = start_tunnel()
+    if not tunnel_proc or not public_url:
+        print("[ERROR] Failed to establish public tunnel.")
         server_proc.terminate()
         return
 
-    print("[*] Verifying tunnel connectivity...")
-    for _ in range(20):
-        try:
-            req = urllib.request.Request(
-                f"{tunnel_url}/health",
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req, timeout=3) as res:
-                if res.status == 200:
-                    break
-        except Exception:
-            time.sleep(1)
+    def drain():
+        for _ in iter(tunnel_proc.stdout.readline, ""):
+            pass
+    threading.Thread(target=drain, daemon=True).start()
 
     os.system("cls" if os.name == "nt" else "clear")
 
-    swagger_url = f"{tunnel_url}/docs"
+    swagger_url = f"{public_url}/docs"
     banner = f"""
 ================================================================================
                     Castle Token API - ONLINE & READY
@@ -91,18 +120,18 @@ def main():
       {swagger_url}
 
   [+] Swagger UI (Local):
-      http://localhost:8000/docs
+      http://127.0.0.1:8000/docs
 
   [+] Castle Token Endpoint:
-      POST {tunnel_url}/android/twitter/castle
+      POST {public_url}/android/twitter/castle
       Header: Content-Type: application/json
       Body:   {{"ip": "1.1.1.1"}}
 
   [+] Twitter Auth Endpoint:
-      POST {tunnel_url}/api/TwitterAuth/authenticate
+      POST {public_url}/api/TwitterAuth/authenticate
 
   [+] Server Stats:
-      GET {tunnel_url}/stats
+      GET {public_url}/stats
 
 ================================================================================
   Opening Swagger UI in your browser automatically...
@@ -119,12 +148,12 @@ def main():
     try:
         while True:
             time.sleep(1)
-            if server_proc.poll() is not None or cf_proc.poll() is not None:
+            if server_proc.poll() is not None or tunnel_proc.poll() is not None:
                 break
     except KeyboardInterrupt:
         pass
     finally:
-        cf_proc.terminate()
+        tunnel_proc.terminate()
         server_proc.terminate()
 
 if __name__ == "__main__":
