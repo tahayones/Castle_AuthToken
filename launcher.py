@@ -8,6 +8,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+os.environ["NODE_OPTIONS"] = (os.environ.get("NODE_OPTIONS", "") + " --experimental-require-module").strip()
+
 BASE = Path(__file__).parent
 
 def start_server():

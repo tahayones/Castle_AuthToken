@@ -4,6 +4,7 @@ cd /d "%~dp0"
 title Castle Token API - Cloudflare Tunnel Launcher
 
 set "PATH=%LocalAppData%\Programs\Python\Python312;%LocalAppData%\Programs\Python\Python312\Scripts;%LocalAppData%\Programs\Python\Python311;%LocalAppData%\Programs\Python\Python311\Scripts;%ProgramFiles%\Python312;%ProgramFiles%\Python311;%ProgramFiles%\nodejs;%ProgramFiles(x86)%\nodejs;%PATH%"
+set "NODE_OPTIONS=--experimental-require-module"
 
 where python >nul 2>nul
 if %errorlevel% neq 0 (
@@ -24,8 +25,8 @@ if %errorlevel% neq 0 (
 
 where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [INFO] Node.js is not installed. Downloading Node.js 20 LTS...
-    curl.exe -L "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -o "%temp%\node_installer.msi"
+    echo [INFO] Node.js is not installed. Downloading Node.js 22 LTS...
+    curl.exe -L "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi" -o "%temp%\node_installer.msi"
     echo [INFO] Installing Node.js silently...
     msiexec /i "%temp%\node_installer.msi" /qn /norestart
     del "%temp%\node_installer.msi" 2>nul

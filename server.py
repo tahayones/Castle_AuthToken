@@ -3,6 +3,8 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
+os.environ["NODE_OPTIONS"] = (os.environ.get("NODE_OPTIONS", "") + " --experimental-require-module").strip()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
