@@ -11,8 +11,8 @@ from pydantic import BaseModel
 BASE = Path(__file__).parent
 ENGINE = BASE / "castle_engine_final.js"
 SDK = BASE / "castle_cdn_sdk.js"
-TIMEOUT = int(os.getenv("TIMEOUT", "30"))
-_sem = asyncio.Semaphore(int(os.getenv("MAX_PARALLEL", "100")))
+TIMEOUT = int(os.getenv("TIMEOUT", "90"))
+_sem = asyncio.Semaphore(int(os.getenv("MAX_PARALLEL", "6")))
 
 _DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE)))
 _COUNTER_FILE = _DATA_DIR / "castle_counter.txt"
