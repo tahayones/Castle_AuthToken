@@ -1,379 +1,394 @@
-/**
- * castle_engine_final.js
- * ═══════════════════════════════════════════════════════════════
- * Twitter Castle token generator — Pure Node.js + jsdom
- * No browser required. Each token gets a unique device fingerprint.
- *
- * Key design:
- *  • Chrome/150 fixed — must match the login request UA & impersonate
- *  • Proxy IP injected via RTCPeerConnection stub — castle fingerprint
- *    matches the request IP so Twitter doesn't flag IP mismatch
- *  • All canvas/audio/GPU values are randomised per token
- *
- * Usage:
- *   node castle_engine_final.js [count] [--threads N] [--ip=1.2.3.4] [--stdout]
- *   node castle_engine_final.js 10 --threads 5
- *   node castle_engine_final.js 1 --stdout --ip=92.40.200.195
- */
 "use strict";
-
 const fs   = require("fs");
 const path = require("path");
 const { JSDOM, VirtualConsole } = require("jsdom");
 const nodeCrypto = require("crypto");
-
-// ── Constants ───────────────────────────────────────────────────────────────
 const CASTLE_PK = "pk_AvRa79bHyJSYSQHnRpcVtzyxetSvFerx";
 const SDK_FILE  = path.join(__dirname, "castle_cdn_sdk.js");
 const OUT_FILE  = path.join(__dirname, "castle_token.txt");
-
-// ── CLI args ────────────────────────────────────────────────────────────────
-const args       = process.argv.slice(2);
-const COUNT      = parseInt(args.find(a => /^\d+$/.test(a)) ?? "1", 10);
-const THREADS    = parseInt((args.find(a => a.startsWith("--threads=")) ?? "=3").split("=")[1], 10)
-                 || (args.includes("--threads") ? parseInt(args[args.indexOf("--threads") + 1]) : 3);
-const STDOUT     = args.includes("--stdout");
-const IP_ARG     = args.find(a => a.startsWith("--ip="));
-const PROXY_IP   = IP_ARG ? IP_ARG.split("=")[1] : null;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const rand = (lo, hi) => Math.floor(Math.random() * (hi - lo + 1)) + lo;
-const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-
-// ── Random device fingerprint ────────────────────────────────────────────────
+const IP_ARG = process.argv.find(a => a.startsWith("--ip="));
+const PROXY_IP = IP_ARG ? IP_ARG.split("=")[1] : null;
+const rand    = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const pick    = arr => arr[Math.floor(Math.random() * arr.length)];
+const randHex = n => nodeCrypto.randomBytes(Math.ceil(n/2)).toString("hex").slice(0, n);
 function makeDeviceProfile() {
   const screens = [
-    [1920,1080],[2560,1440],[1366,768],[1440,900],[1536,864],
-    [1280,800],[1600,900],[1280,1024],[3840,2160],[2560,1080],
-    [1920,1200],[1680,1050],
+    [1920,1080], [1920,1200], [2560,1440], [2560,1600],
+    [1680,1050], [1600,900],  [1440,900],  [1366,768],
+    [1280,800],  [1280,1024], [2048,1152], [3840,2160],
   ];
   const [sw, sh] = pick(screens);
-
+  const taskbar = pick([40, 48, 56, 60]);
   const gpus = [
     { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
     { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Super Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { vendor:"Google Inc. (AMD)",    renderer:"ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 2070 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce GTX 970 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor:"Google Inc. (AMD)",    renderer:"ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)" },
     { vendor:"Google Inc. (AMD)",    renderer:"ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
     { vendor:"Google Inc. (Intel)",  renderer:"ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
     { vendor:"Google Inc. (Intel)",  renderer:"ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 2070 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { vendor:"Google Inc. (NVIDIA)", renderer:"ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
   ];
   const gpu = pick(gpus);
-
-  // Chrome version FIXED at 150 — must match login UA and impersonate
   const chromeVer = "150";
-
-  const cores  = pick([2, 4, 6, 8, 10, 12, 16]);
-  const memory = pick([2, 4, 8, 16]);
-  const tz     = pick([-480, -420, -360, -300, -240, -120, 0, 60, 120, 180, 300, 330, 540]);
-  const lang   = pick(["en-US", "en-GB", "en-US,en;q=0.9", "en-GB,en;q=0.9"]);
-  const langs  = pick([["en-US","en"], ["en-GB","en"], ["en-US","en","pl"], ["en-US","en-GB","en"]]);
-
-  // Canvas noise — 32 unique bytes per device
+  const cores = pick([2, 4, 6, 8, 10, 12, 16]);
+  const mem   = pick([2, 4, 8, 16]);
+  const tzOffset = pick([-300, -240, -360, 60, 120]);   
   const canvasNoise = nodeCrypto.randomBytes(32);
-  const audioNoise  = (Math.random() * 0.0001).toFixed(10);
-
-  // Memory (heap) — realistic values
-  const heapTotal = rand(200, 800) * 1024 * 1024;
-  const heapUsed  = rand(80, Math.floor(heapTotal * 0.7 / (1024*1024))) * 1024 * 1024;
-
-  return { sw, sh, gpu, chromeVer, cores, memory, tz, lang, langs,
-           canvasNoise, audioNoise, heapTotal, heapUsed };
+  const audioNoise = (Math.random() * 0.0001).toFixed(8);
+  const heapUsed  = rand(40, 120) * 1e6;
+  const heapTotal = heapUsed + rand(20, 60) * 1e6;
+  return { sw, sh, taskbar, gpu, chromeVer, cores, mem, tzOffset, canvasNoise, audioNoise, heapUsed, heapTotal };
 }
-
-// ── Build jsdom window with full fingerprint stubs ───────────────────────────
-function buildWindow(dev, sdkCode, proxyIP) {
-  const innerW = dev.sw;
-  const innerH = dev.sh - rand(80, 140);
-
+async function createCastleInstance(sdkCode) {
   const vc = new VirtualConsole();
-  const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>", {
-    url:            "https://x.com/i/jf/onboarding/web",
-    pretendToBeVisual: true,
-    virtualConsole: vc,
-    runScripts:     "dangerously",
-    resources:      "usable",
-  });
-
+  vc.on("jsdomError", () => {});
+  vc.on("error",      () => {});
+  const dev = makeDeviceProfile();
+  const UA  = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${dev.chromeVer}.0.0.0 Safari/537.36`;
+  const dom = new JSDOM(
+    `<!DOCTYPE html><html lang="en"><head></head><body></body></html>`,
+    {
+      url: "https://x.com/i/jf/onboarding/web",
+      pretendToBeVisual: true,
+      runScripts: "outside-only",
+      virtualConsole: vc,
+    }
+  );
   const win = dom.window;
-
-  // ── Window dimensions ──────────────────────────────────────────────────────
-  Object.defineProperties(win, {
-    innerWidth:  { get: () => innerW, configurable: true },
-    innerHeight: { get: () => innerH, configurable: true },
-    outerWidth:  { get: () => dev.sw, configurable: true },
-    outerHeight: { get: () => dev.sh, configurable: true },
-    devicePixelRatio: { get: () => pick([1, 1.25, 1.5, 2]), configurable: true },
-  });
-
-  // ── Screen ─────────────────────────────────────────────────────────────────
-  const screenDefs = {
-    width: dev.sw, height: dev.sh, availWidth: dev.sw, availHeight: dev.sh - 40,
-    colorDepth: 24, pixelDepth: 24,
-  };
-  for (const [k, v] of Object.entries(screenDefs)) {
-    Object.defineProperty(win.screen, k, { get: () => v, configurable: true });
-  }
-
-  // ── Navigator ──────────────────────────────────────────────────────────────
-  const nav = win.navigator;
-  Object.defineProperties(nav, {
-    userAgent: { get: () => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${dev.chromeVer}.0.0.0 Safari/537.36`, configurable: true },
-    platform:  { get: () => "Win32", configurable: true },
-    hardwareConcurrency: { get: () => dev.cores, configurable: true },
-    deviceMemory: { get: () => dev.memory, configurable: true },
-    maxTouchPoints: { get: () => 0, configurable: true },
-    language:  { get: () => dev.lang, configurable: true },
-    languages: { get: () => dev.langs, configurable: true },
-    vendor:    { get: () => "Google Inc.", configurable: true },
-    cookieEnabled: { get: () => true, configurable: true },
-    doNotTrack: { get: () => null, configurable: true },
-    webdriver: { get: () => undefined, configurable: true },
-    pdfViewerEnabled: { get: () => true, configurable: true },
-    connection: { get: () => ({ effectiveType: "4g", rtt: rand(20,80), downlink: rand(10,100), saveData: false }), configurable: true },
-    getBattery: { value: () => Promise.resolve({ charging: true, chargingTime: 0, dischargingTime: Infinity, level: 0.98 }), configurable: true },
-    mediaDevices: { get: () => ({ enumerateDevices: () => Promise.resolve([]) }), configurable: true },
-    permissions: { get: () => ({ query: () => Promise.resolve({ state: "granted" }) }), configurable: true },
-    plugins: { get: () => ({ length: 3, item: () => null, namedItem: () => null }), configurable: true },
-    mimeTypes: { get: () => ({ length: 2 }), configurable: true },
-  });
-
-  // ── Canvas ──────────────────────────────────────────────────────────────────
-  const noise = dev.canvasNoise;
-  function makeCtx2D() {
-    const pixels = new Uint8ClampedArray(4 * 300 * 150);
-    for (let i = 0; i < pixels.length; i++) pixels[i] = noise[i % noise.length];
-    return {
-      fillStyle: "#000", strokeStyle: "#000", font: "10px sans-serif",
-      textBaseline: "alphabetic", globalAlpha: 1,
-      fillText: () => {}, strokeText: () => {}, fillRect: () => {},
-      strokeRect: () => {}, clearRect: () => {},
-      beginPath: () => {}, arc: () => {}, fill: () => {}, stroke: () => {},
-      save: () => {}, restore: () => {}, translate: () => {}, scale: () => {},
-      measureText: (t) => ({ width: t.length * (5.5 + Math.random() * 0.5) }),
-      getImageData: () => ({ data: pixels, width: 300, height: 150 }),
-      putImageData: () => {}, createImageData: () => ({ data: new Uint8ClampedArray(4*300*150) }),
-      drawImage: () => {}, setTransform: () => {},
-    };
-  }
-  function makeCtxWebGL() {
-    return {
-      getExtension: (n) => n === "WEBGL_debug_renderer_info" ? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 } : null,
-      getParameter: (p) => {
-        if (p === 0x9245) return dev.gpu.vendor;
-        if (p === 0x9246) return dev.gpu.renderer;
-        if (p === 0x1F00) return dev.gpu.vendor;
-        if (p === 0x1F01) return dev.gpu.renderer;
-        if (p === 0x1F02) return `WebGL 2.0 (OpenGL ES 3.0 Chromium)`;
-        if (p === 0x8B8C) return `WebGL GLSL ES 3.00`;
-        if (p === 0x0B20) return 7680;  // MAX_VIEWPORT_DIMS
-        return null;
+  const pluginsArr = Object.assign(
+    [
+      { name:"Chrome PDF Plugin",   description:"", filename:"chrome_pdf_plugin.dll",              length:0, item:()=>null, namedItem:()=>null },
+      { name:"Chrome PDF Viewer",   description:"", filename:"mhjfbmdgcfjbbpaeojofohoefgiehjai.dll",length:0, item:()=>null, namedItem:()=>null },
+      { name:"Native Client",       description:"", filename:"internal-nacl-plugin",               length:0, item:()=>null, namedItem:()=>null },
+    ],
+    { item: i => pluginsArr[i]||null, namedItem: n => pluginsArr.find(p=>p.name===n)||null, refresh:()=>{}, length: 3 }
+  );
+  const langs = pick([["en-US","en"],["en-GB","en"],["en-US","en","pl"],["pl","pl-PL","en-US","en"]]);
+  Object.defineProperty(win, "navigator", {
+    value: new Proxy(win.navigator, {
+      get(t, p) {
+        const ov = {
+          userAgent:           UA,
+          appVersion:          `5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${dev.chromeVer}.0.0.0 Safari/537.36`,
+          platform:            "Win32",
+          vendor:              "Google Inc.",
+          language:            langs[0],
+          languages:           Object.freeze(langs),
+          hardwareConcurrency: dev.cores,
+          deviceMemory:        dev.mem,
+          maxTouchPoints:      0,
+          cookieEnabled:       true,
+          doNotTrack:          null,
+          onLine:              true,
+          webdriver:           false,
+          product:             "Gecko",
+          productSub:          "20030107",
+          appName:             "Netscape",
+          appCodeName:         "Mozilla",
+          plugins:             pluginsArr,
+          mimeTypes:           { length:0, item:()=>null, namedItem:()=>null },
+          sendBeacon:          ()=>true,
+          permissions:         { query: ()=>Promise.resolve({state:"prompt",addEventListener(){}}) },
+          mediaDevices:        { enumerateDevices: ()=>Promise.resolve([]) },
+          getBattery:          ()=>Promise.resolve({charging:true,level:1,chargingTime:0,dischargingTime:Infinity,addEventListener(){}}),
+          connection:          { effectiveType:"4g", downlink:rand(5,100), rtt:rand(10,80), saveData:false, addEventListener(){}, onchange:null },
+          oscpu:               undefined,
+          cpuClass:            undefined,
+          geolocation:         { getCurrentPosition:(_,e)=>e&&e({code:1,message:"denied"}) },
+        };
+        if (p in ov) return ov[p];
+        const v = t[p];
+        return typeof v === "function" ? v.bind(t) : v;
       },
-      createShader: () => ({}), shaderSource: () => {}, compileShader: () => {},
-      createProgram: () => ({}), attachShader: () => {}, linkProgram: () => {}, useProgram: () => {},
-      getAttribLocation: () => 0, getUniformLocation: () => ({}),
-      createBuffer: () => ({}), bindBuffer: () => {}, bufferData: () => {},
-      enableVertexAttribArray: () => {}, vertexAttribPointer: () => {},
-      uniform1f: () => {}, uniform2f: () => {}, uniform4f: () => {},
-      viewport: () => {}, clearColor: () => {}, clear: () => {}, drawArrays: () => {},
-      deleteShader: () => {}, deleteProgram: () => {}, deleteBuffer: () => {},
-      createTexture: () => ({}), bindTexture: () => {}, texImage2D: () => {},
-      texParameteri: () => {}, generateMipmap: () => {}, deleteTexture: () => {},
-      canvas: { width: 300, height: 150, toDataURL: () => `data:image/png;base64,${noise.toString("base64")}` },
-      drawingBufferWidth: 300, drawingBufferHeight: 150,
-      getSupportedExtensions: () => ["WEBGL_debug_renderer_info","EXT_color_buffer_float","OES_texture_float"],
-    };
-  }
-  win.HTMLCanvasElement.prototype.getContext = function(type) {
-    if (type === "2d") return makeCtx2D();
-    if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") return makeCtxWebGL();
-    return null;
+      has: () => true,
+    }),
+    writable: false, configurable: true,
+  });
+  Object.defineProperty(win, "screen", {
+    value: {
+      width:       dev.sw,
+      height:      dev.sh,
+      availWidth:  dev.sw,
+      availHeight: dev.sh - dev.taskbar,
+      colorDepth:  24,
+      pixelDepth:  24,
+      orientation: { type:"landscape-primary", angle:0, addEventListener(){}, removeEventListener(){} },
+    },
+    writable: false, configurable: true,
+  });
+  const innerH = dev.sh - dev.taskbar - rand(60, 110);   
+  win.devicePixelRatio = pick([1, 1, 1, 1.25, 1.5, 2]);
+  win.innerWidth  = dev.sw;
+  win.innerHeight = innerH;
+  win.outerWidth  = dev.sw;
+  win.outerHeight = dev.sh - dev.taskbar;
+  win.screenX = 0;
+  win.screenY = 0;
+  const _origDate = win.Date;
+  const tzOff = dev.tzOffset;
+  win.Date = class extends _origDate {
+    getTimezoneOffset() { return tzOff; }
   };
-  win.HTMLCanvasElement.prototype.toDataURL = () => `data:image/png;base64,${noise.toString("base64")}`;
-
-  // ── OfflineAudioContext (audio fingerprint) ──────────────────────────────
-  const audioNoise = parseFloat(dev.audioNoise);
-  win.OfflineAudioContext = win.OfflineAudioContext || class OfflineAudioContext {
-    constructor(channels, frames, rate) {
-      this.sampleRate = rate;
-      this.destination = { channelCount: channels };
-    }
-    createOscillator() {
-      return { type:"triangle", frequency:{ value:10000 }, connect:()=>{}, start:()=>{}, stop:()=>{} };
-    }
-    createDynamicsCompressor() {
-      return {
-        threshold: { value: -50 + audioNoise }, knee: { value: 40 }, ratio: { value: 12 },
-        reduction: -20 + audioNoise, attack: { value: 0 }, release: { value: 0.25 },
-        connect: () => {},
+  win.Date.now = _origDate.now.bind(_origDate);
+  Object.defineProperty(win, "crypto", {
+    value: {
+      getRandomValues(arr) {
+        const b = nodeCrypto.randomBytes(arr.byteLength || arr.length);
+        for (let i=0; i<arr.length; i++) arr[i] = b[i];
+        return arr;
+      },
+      subtle: {
+        digest:      (a,d) => Promise.resolve(nodeCrypto.createHash("sha256").update(Buffer.from(d)).digest().buffer),
+        importKey:   ()    => Promise.resolve({}),
+        sign:        ()    => Promise.resolve(new ArrayBuffer(32)),
+        verify:      ()    => Promise.resolve(true),
+        generateKey: ()    => Promise.resolve({}),
+        deriveKey:   ()    => Promise.resolve({}),
+        deriveBits:  ()    => Promise.resolve(new ArrayBuffer(32)),
+        encrypt:     ()    => Promise.resolve(new ArrayBuffer(32)),
+        decrypt:     ()    => Promise.resolve(new ArrayBuffer(0)),
+      },
+      randomUUID: () => nodeCrypto.randomUUID(),
+    },
+    writable: true, configurable: true,
+  });
+  const mkStorage = () => {
+    const s = {};
+    return {
+      getItem:    k   => s[k] ?? null,
+      setItem:    (k,v) => { s[k] = String(v); },
+      removeItem: k   => { delete s[k]; },
+      clear:      ()  => { for (const k in s) delete s[k]; },
+      get length()    { return Object.keys(s).length; },
+      key:        i   => Object.keys(s)[i] ?? null,
+    };
+  };
+  Object.defineProperty(win, "localStorage",  { value: mkStorage(), writable:true, configurable:true });
+  Object.defineProperty(win, "sessionStorage", { value: mkStorage(), writable:true, configurable:true });
+  win.TextEncoder = TextEncoder;
+  win.TextDecoder = TextDecoder;
+  win.chrome = {
+    runtime: {
+      onMessage:   { addListener(){}, removeListener(){} },
+      onConnect:   { addListener(){} },
+      sendMessage(){},
+      getManifest: () => ({ version:`${dev.chromeVer}.0.0.0` }),
+      connect:     () => ({ postMessage(){}, onMessage:{ addListener(){} } }),
+      id: undefined,
+    },
+    loadTimes: () => ({}),
+    csi:       () => ({}),
+    app: { isInstalled: false },
+  };
+  const noise = dev.canvasNoise;   
+  const _origCreate = win.document.createElement.bind(win.document);
+  win.document.createElement = function(tag, opts) {
+    const el = _origCreate(tag, opts);
+    if (tag === "canvas" && !el.getContext) {
+      el.width  = 300;
+      el.height = 150;
+      el.getContext = type => {
+        if (type === "2d") return {
+          fillStyle:"#000", font:"10px sans-serif", textBaseline:"alphabetic",
+          globalCompositeOperation:"source-over", strokeStyle:"#000",
+          lineWidth:1, shadowBlur:0, shadowColor:"", globalAlpha:1,
+          fillRect(){}, fillText(){}, clearRect(){}, beginPath(){}, arc(){}, fill(){},
+          stroke(){}, save(){}, restore(){}, translate(){}, rotate(){}, scale(){},
+          moveTo(){}, lineTo(){}, closePath(){}, rect(){}, clip(){}, setTransform(){},
+          measureText: t => ({ width: t.length*7 + noise[0]*0.01, actualBoundingBoxAscent:10, actualBoundingBoxDescent:2 }),
+          createLinearGradient: () => ({ addColorStop(){} }),
+          getImageData: (x,y,w,h) => {
+            const data = new Uint8ClampedArray(w*h*4);
+            for (let i=0; i<Math.min(noise.length, data.length); i++) data[i] = noise[i % noise.length];
+            return { data, width:w, height:h };
+          },
+          putImageData(){}, drawImage(){}, createPattern:()=>null,
+          canvas: el,
+          toDataURL: () => `data:image/png;base64,${noise.toString("base64")}`,
+        };
+        if (type==="webgl" || type==="experimental-webgl" || type==="webgl2") return {
+          RENDERER:7937, VENDOR:7936, VERSION:7938, SHADING_LANGUAGE_VERSION:35724,
+          UNMASKED_RENDERER_WEBGL:37446, UNMASKED_VENDOR_WEBGL:37445,
+          getParameter(p) {
+            return ({
+              7936: dev.gpu.vendor,
+              7937: dev.gpu.renderer,
+              7938: "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+              35724:"WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+              37445: dev.gpu.vendor,
+              37446: dev.gpu.renderer,
+              35672:16, 34921:16, 36347:256, 36348:224,
+              3379:16384, 3386:new Int32Array([32767,32767]),
+              3410:8, 3411:8, 3412:8, 3413:8, 3414:24, 3415:8,
+            })[p] ?? null;
+          },
+          getExtension(n) {
+            if (n==="WEBGL_debug_renderer_info") return {UNMASKED_VENDOR_WEBGL:37445, UNMASKED_RENDERER_WEBGL:37446};
+            if (n==="EXT_texture_filter_anisotropic" || n==="WEBKIT_EXT_texture_filter_anisotropic") return {MAX_TEXTURE_MAX_ANISOTROPY_EXT:0x84FF};
+            if (n==="OES_vertex_array_object") return {createVertexArrayOES(){return{};},bindVertexArrayOES(){},deleteVertexArrayOES(){}};
+            return {};
+          },
+          getSupportedExtensions: () => [
+            "ANGLE_instanced_arrays","EXT_blend_minmax","EXT_frag_depth","EXT_texture_filter_anisotropic",
+            "OES_element_index_uint","OES_standard_derivatives","OES_texture_float","OES_texture_half_float",
+            "OES_vertex_array_object","WEBGL_debug_renderer_info","WEBGL_depth_texture","WEBGL_draw_buffers",
+          ],
+          createBuffer(){return{};}, bindBuffer(){}, bufferData(){},
+          createProgram(){return{};}, createShader(){return{};},
+          shaderSource(){}, compileShader(){}, attachShader(){}, linkProgram(){},
+          useProgram(){}, getAttribLocation:()=>0, getUniformLocation:()=>({}),
+          getShaderParameter:()=>true, getProgramParameter:()=>true,
+          enable(){}, disable(){}, viewport(){}, clear(){}, clearColor(){},
+          drawArrays(){}, drawElements(){},
+          vertexAttribPointer(){}, enableVertexAttribArray(){},
+          deleteBuffer(){}, deleteProgram(){}, deleteShader(){},
+          isContextLost:()=>false, canvas:el,
+        };
+        return null;
       };
     }
-    async startRendering() {
-      const buf = new Float32Array(4096);
-      for (let i = 0; i < buf.length; i++) buf[i] = Math.sin(i * 0.01) * audioNoise;
-      return { getChannelData: () => buf, length: buf.length, duration: 0.09, sampleRate: 44100 };
-    }
+    return el;
   };
-
-  // ── RTCPeerConnection — inject proxy IP so fingerprint matches request IP ─
-  const targetIP = proxyIP || `${rand(1,254)}.${rand(1,254)}.${rand(1,254)}.${rand(1,254)}`;
-  win.RTCPeerConnection = class RTCPeerConnection {
-    constructor() { this._handlers = {}; this.localDescription = null; }
-    createDataChannel() { return { close() {} }; }
-    async createOffer() { return { type: "offer", sdp: `v=0\r\no=- 1 1 IN IP4 ${targetIP}\r\ns=-\r\n` }; }
-    async setLocalDescription(d) {
-      this.localDescription = d;
-      const cand = { candidate: `candidate:1 1 UDP 2130706431 ${targetIP} ${rand(10000,60000)} typ host`, sdpMid: "0", sdpMLineIndex: 0 };
+  const aNoise = parseFloat(dev.audioNoise);
+  const mkAudio = () => ({
+    destination:{}, sampleRate:44100, state:"running",
+    currentTime: Math.random() * 500 + 100,
+    createOscillator: () => ({
+      type:"sine", frequency:{value:440+aNoise,setValueAtTime(){}},
+      connect(){return this;}, start(){}, stop(){}, disconnect(){}
+    }),
+    createDynamicsCompressor: () => ({
+      threshold:{value:-24+aNoise}, knee:{value:30}, ratio:{value:12},
+      attack:{value:0.003}, release:{value:0.25},
+      connect(){return this;}, disconnect(){}
+    }),
+    createGain: () => ({ gain:{value:1,setValueAtTime(){}}, connect(){return this;}, disconnect(){} }),
+    createAnalyser: () => ({
+      fftSize:2048, frequencyBinCount:1024,
+      getFloatFrequencyData(a) { for(let i=0;i<a.length;i++) a[i]=-100+Math.random()*2+aNoise; },
+      connect(){return this;}, disconnect(){}
+    }),
+    createBuffer:       (c,l,sr) => ({numberOfChannels:c,length:l,sampleRate:sr,getChannelData:()=>new Float32Array(l).fill(aNoise)}),
+    createBufferSource: ()       => ({buffer:null,connect(){return this;},start(){},stop(){},disconnect(){}}),
+    createScriptProcessor: ()    => ({onaudioprocess:null,connect(){return this;},disconnect(){}}),
+    close: () => Promise.resolve(),
+    addEventListener(){}, removeEventListener(){},
+  });
+  win.AudioContext        = class { constructor() { return mkAudio(); } };
+  win.webkitAudioContext  = win.AudioContext;
+  win.OfflineAudioContext = class {
+    constructor(ch, len, sr) { this._len=len; this.destination={}; this.sampleRate=sr; }
+    createOscillator()        { return {type:"triangle",frequency:{value:10000+aNoise,setValueAtTime(){}},connect(){return this;},start(){},stop(){}};  }
+    createDynamicsCompressor(){ return {connect(){return this;}}; }
+    startRendering()          { return Promise.resolve({getChannelData:()=>new Float32Array(this._len).fill(0.5+aNoise)}); }
+  };
+  if (win.performance) {
+    win.performance.memory = {
+      usedJSHeapSize:  dev.heapUsed,
+      totalJSHeapSize: dev.heapTotal,
+      jsHeapSizeLimit: 4294705152,
+    };
+  }
+  win.fetch       = () => Promise.resolve({ ok:false, status:0, json:()=>Promise.resolve({}), text:()=>Promise.resolve(""), headers:{get:()=>null} });
+  win.matchMedia  = () => ({ matches:false, addListener(){}, removeListener(){}, addEventListener(){}, media:"" });
+  win.visualViewport = { width:dev.sw, height:innerH, scale:1, offsetLeft:0, offsetTop:0, addEventListener(){} };
+  const targetIP = PROXY_IP || `${rand(1,254)}.${rand(1,254)}.${rand(1,254)}.${rand(1,254)}`;
+  win.RTCPeerConnection = class {
+    constructor() {
+      this._handlers = {};
+      this.localDescription = null;
+      this.remoteDescription = null;
+    }
+    createDataChannel() { return { close(){} }; }
+    async createOffer()  { return { type:"offer", sdp:`v=0\r\no=- 1234 1 IN IP4 ${targetIP}\r\ns=-\r\n` }; }
+    async setLocalDescription(desc) {
+      this.localDescription = desc;
+      const candidate = {
+        candidate: `candidate:1 1 UDP 2130706431 ${targetIP} ${rand(10000,60000)} typ host`,
+        sdpMid: "0", sdpMLineIndex: 0,
+      };
       setTimeout(() => {
-        if (this.onicecandidate) this.onicecandidate({ candidate: cand });
+        if (this.onicecandidate) this.onicecandidate({ candidate });
         setTimeout(() => { if (this.onicecandidate) this.onicecandidate({ candidate: null }); }, 10);
       }, 5);
     }
+    async setRemoteDescription(desc) { this.remoteDescription = desc; }
     async addIceCandidate() {}
     close() {}
-    get onicecandidate() { return this._handlers.ice; }
-    set onicecandidate(fn) { this._handlers.ice = fn; }
+    addEventListener(ev, fn) { this._handlers[ev] = fn; }
+    removeEventListener() {}
+    get onicecandidate() { return this._handlers["icecandidate"]; }
+    set onicecandidate(fn) { this._handlers["icecandidate"] = fn; }
   };
-  win.RTCSessionDescription = class { constructor(d) { Object.assign(this, d); } };
-
-  // ── Performance / timing ──────────────────────────────────────────────────
-  const t0 = Date.now() - rand(5000, 60000);
-  const perfObj = {
-    now: () => Date.now() - t0,
-    timing: { navigationStart: t0, loadEventEnd: t0 + rand(800, 3000) },
-    memory: { jsHeapSizeLimit: 2172649472, totalJSHeapSize: dev.heapTotal, usedJSHeapSize: dev.heapUsed },
-    getEntriesByType: () => [], mark: () => {}, measure: () => {},
-  };
-  Object.defineProperty(win, "performance", { get: () => perfObj, configurable: true });
-
-  // ── Date / timezone ────────────────────────────────────────────────────────
-  const OrigDate = win.Date;
-  win.Date = class extends OrigDate {
-    getTimezoneOffset() { return dev.tz; }
-  };
-  Object.assign(win.Date, OrigDate);
-
-  // ── Misc stubs (direct assignment — safe for non-jsdom-builtin properties) ──
-  const _ls = (() => {
-    const m = {};
-    return { getItem: k => m[k] ?? null, setItem: (k,v) => { m[k] = String(v); },
-             removeItem: k => delete m[k], clear: () => { for (const k in m) delete m[k]; },
-             get length() { return Object.keys(m).length; } };
-  })();
-  try { win.localStorage  = _ls; } catch(e) { Object.defineProperty(win, "localStorage",  { get: () => _ls, configurable: true }); }
-  try { win.sessionStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{}, clear:()=>{}, length:0 }; }
-  catch(e) { Object.defineProperty(win, "sessionStorage", { get:()=>({ getItem:()=>null, setItem:()=>{}, removeItem:()=>{}, clear:()=>{}, length:0 }), configurable:true }); }
-
-  const _crypto = { getRandomValues: (buf) => { nodeCrypto.randomFillSync(buf); return buf; }, subtle: {} };
-  try { win.crypto = _crypto; } catch(e) { Object.defineProperty(win, "crypto", { get: () => _crypto, configurable: true }); }
-
-  win.indexedDB            = { open: () => ({ onsuccess: null, onerror: null, result: null }) };
-  win.requestAnimationFrame = (cb) => setTimeout(cb, 16);
-  win.cancelAnimationFrame  = (id) => clearTimeout(id);
-  win.matchMedia            = () => ({ matches: false, addListener(){}, removeListener(){}, addEventListener(){}, media: "" });
-  win.Notification          = { permission: "default", requestPermission: () => Promise.resolve("denied") };
-  win.chrome                = { runtime: {} };
-  try { win.visualViewport = { width: innerW, height: innerH, scale: 1, offsetLeft: 0, offsetTop: 0, addEventListener(){} }; }
-  catch(e) { Object.defineProperty(win, "visualViewport", { get:()=>({ width:innerW, height:innerH, scale:1, offsetLeft:0, offsetTop:0, addEventListener(){} }), configurable:true }); }
-  try { win.Intl = { DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: pick(["Europe/London","America/New_York","Europe/Berlin","Asia/Tokyo"]) }) }) }; }
-  catch(e) {}
-
-
-  // ── Load Castle SDK ────────────────────────────────────────────────────────
+  win.RTCSessionDescription = class { constructor(d){ Object.assign(this,d); } };
   try {
     win.eval(sdkCode);
-  } catch (e) {
-    throw new Error(`Castle SDK eval failed: ${e.message}`);
+  } catch(e) {
   }
-
-  // NOTE: The SDK exposes window.Castle (capital C)
-  if (!win.Castle || typeof win.Castle.configure !== "function") {
-    throw new Error("Castle SDK did not expose window.Castle");
+  const castle = win.Castle;
+  if (!castle || typeof castle.configure !== "function") {
+    throw new Error(`Castle not exported. Keys: ${castle ? Object.keys(castle) : "null"}`);
   }
-
-  win.Castle.configure({ pk: CASTLE_PK });
-
-  return win;
+  try {
+    await castle.configure({ pk: CASTLE_PK });
+  } catch(e) {}
+  await new Promise(r => setTimeout(r, 200));
+  return { castle, dom };
 }
-
-// ── Generate a single castle token ──────────────────────────────────────────
-async function generateToken(proxyIP) {
-  const sdkCode = fs.readFileSync(SDK_FILE, "utf-8");
-  const dev = makeDeviceProfile();
-  const win = buildWindow(dev, sdkCode, proxyIP);
-
-  const token = await win.Castle.createRequestToken();
-  if (!token || token.length < 20) throw new Error("Empty token from SDK");
+async function generateToken(castle) {
+  const token = await castle.createRequestToken();
+  if (!token || typeof token !== "string") throw new Error(`Invalid token: ${JSON.stringify(token)}`);
   return token;
 }
-
-// ── Batch generation with concurrency control ─────────────────────────────────
-async function generateBatch(count, maxThreads, proxyIP) {
-  const t0      = Date.now();
-  const tokens  = [];
-  const errors  = [];
-  let   pending = 0;
-  let   index   = 0;
-
-  if (!STDOUT) {
-    console.error(`Castle Engine — ${count} token(s) | threads: ${maxThreads}${proxyIP ? ` | ip: ${proxyIP}` : ""}`);
-    console.error(`Generating ${count} unique device fingerprints...`);
+async function main() {
+  const args    = process.argv.slice(2);
+  const count   = parseInt(args.find(a => /^\d+$/.test(a)) || "1");
+  const stdout  = args.includes("--stdout");
+  const threads = parseInt((args.find(a => a.startsWith("--threads=")) || "").split("=")[1] || (args[args.indexOf("--threads")+1] || "1"));
+  if (!stdout) {
+    process.stderr.write(`Castle Engine (jsdom+randomized fingerprints) — ${count} token(s) | threads: ${threads}\n`);
   }
-
-  return new Promise((resolve) => {
-    function tryNext() {
-      while (pending < maxThreads && index < count) {
-        const i = index++;
-        pending++;
-        const t1 = Date.now();
-        generateToken(proxyIP)
-          .then(token => {
-            tokens.push(token);
-            if (!STDOUT) console.error(`[${i+1}/${count}] OK (${Date.now()-t1}ms) -> ${token.slice(0,22)}...`);
-          })
-          .catch(err => {
-            errors.push(err.message);
-            if (!STDOUT) console.error(`[${i+1}/${count}] FAIL: ${err.message}`);
-          })
-          .finally(() => {
-            pending--;
-            tryNext();
-            if (pending === 0 && index >= count) {
-              if (!STDOUT) {
-                console.error("=".repeat(50));
-                console.error(`Done: ${tokens.length} ok | ${errors.length} fail | ${Date.now()-t0}ms total`);
-                console.error(`Avg: ${Math.round((Date.now()-t0)/count)}ms/token`);
-                console.error(`Saved to: ${OUT_FILE}`);
-                console.error("=".repeat(50));
-              }
-              resolve(tokens);
-            }
-          });
+  const sdkCode = fs.readFileSync(SDK_FILE, "utf8");
+  if (!stdout) fs.writeFileSync(OUT_FILE, "", "utf8");
+  const start = Date.now();
+  let ok = 0, fail = 0;
+  const workerCount = Math.min(threads, count);
+  if (!stdout) process.stderr.write(`Creating ${count} unique device fingerprints...\n`);
+  const tasks = Array.from({ length: count }, (_, i) => async () => {
+    const t = Date.now();
+    let inst = null;
+    try {
+      inst = await createCastleInstance(sdkCode);   
+      const token = await generateToken(inst.castle);
+      const ms = Date.now() - t;
+      if (stdout) {
+        process.stdout.write(token + "\n");
+      } else {
+        fs.appendFileSync(OUT_FILE, token + "\n", "utf8");
+        process.stdout.write(`[${i+1}/${count}] OK (${ms}ms) -> ${token.substring(0,22)}...\n`);
       }
+      ok++;
+    } catch(e) {
+      const ms = Date.now() - t;
+      if (!stdout) process.stderr.write(`[${i+1}/${count}] FAIL (${ms}ms): ${e.message}\n`);
+      fail++;
+    } finally {
+      if (inst) try { inst.dom.window.close(); } catch(_) {}
     }
-    tryNext();
   });
+  for (let i = 0; i < tasks.length; i += workerCount) {
+    await Promise.all(tasks.slice(i, i + workerCount).map(t => t()));
+  }
+  if (!stdout) {
+    const total = Date.now() - start;
+    process.stderr.write(`\n${"=".repeat(50)}\n`);
+    process.stderr.write(`Done: ${ok} ok | ${fail} fail | ${total}ms total\n`);
+    process.stderr.write(`Avg: ${Math.round(total/count)}ms/token\n`);
+    if (ok > 0) process.stderr.write(`Saved to: ${OUT_FILE}\n`);
+    process.stderr.write(`${"=".repeat(50)}\n`);
+  }
+  if (fail > 0 && ok === 0) process.exit(1);
 }
-
-// ── Entry point ───────────────────────────────────────────────────────────────
-(async () => {
-  if (!fs.existsSync(SDK_FILE)) {
-    console.error(`ERROR: SDK not found: ${SDK_FILE}`);
-    process.exit(1);
-  }
-
-  const tokens = await generateBatch(COUNT, Math.min(THREADS, COUNT), PROXY_IP);
-
-  if (STDOUT) {
-    // Print only the first token to stdout (used by auth_token.py)
-    process.stdout.write((tokens[0] || "") + "\n");
-  } else {
-    // Save all to file (append mode — each run adds to the pool)
-    const existing = fs.existsSync(OUT_FILE) ? fs.readFileSync(OUT_FILE, "utf-8").split("\n").filter(Boolean) : [];
-    fs.writeFileSync(OUT_FILE, [...tokens, ...existing].join("\n") + "\n", "utf-8");
-  }
-
-  process.exit(tokens.length > 0 ? 0 : 1);
-})();
+main().catch(e => { process.stderr.write(`Fatal: ${e.stack}\n`); process.exit(1); });
