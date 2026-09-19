@@ -12,3 +12,6 @@ auth_results.json
 accounts.txt
 proxy.txt
 castle_token.txt
+cloudflared.exe
+Castle_Portable_Package/
+Castle_Portable_Package.zip
