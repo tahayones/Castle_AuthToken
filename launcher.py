@@ -148,7 +148,11 @@ def main():
     try:
         while True:
             time.sleep(1)
-            if server_proc.poll() is not None or tunnel_proc.poll() is not None:
+            if server_proc.poll() is not None:
+                print(f"[!] Local server stopped with code {server_proc.returncode}")
+                break
+            if tunnel_proc.poll() is not None:
+                print(f"[!] Tunnel process stopped with code {tunnel_proc.returncode}")
                 break
     except KeyboardInterrupt:
         pass

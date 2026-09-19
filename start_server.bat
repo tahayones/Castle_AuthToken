@@ -53,3 +53,4 @@ if not exist cloudflared.exe (
 )
 
 python launcher.py
+pause
