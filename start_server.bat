@@ -48,6 +48,11 @@ if not exist node_modules (
 echo [INFO] Checking Python dependencies...
 python -m pip install -r requirements.txt --quiet
 
+if not exist castle_cdn_sdk.js (
+    echo [INFO] Downloading castle_cdn_sdk.js...
+    curl.exe -L "https://raw.githubusercontent.com/tahayones/Castle_AuthToken/master/castle_cdn_sdk.js" -o castle_cdn_sdk.js
+)
+
 if not exist cloudflared.exe (
     echo [INFO] Downloading cloudflared.exe...
     curl.exe -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o cloudflared.exe
