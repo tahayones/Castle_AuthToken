@@ -86,7 +86,7 @@ async def generate(ip: str | None) -> str:
                 cwd=str(BASE),
             )
             try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT)
             except asyncio.TimeoutError:
                 proc.kill()
                 raise HTTPException(504, "Timed out")
@@ -95,7 +95,8 @@ async def generate(ip: str | None) -> str:
 
     token = (stdout.decode("utf-8", errors="replace").splitlines() or [""])[0].strip()
     if not token or len(token) < 50:
-        raise HTTPException(500, "Failed to generate token")
+        err_msg = stderr.decode("utf-8", errors="replace").strip()
+        raise HTTPException(500, f"Failed to generate token: {err_msg}")
     return token
 
 def _execute_twitter_login(username: str, password: str, totp: str | None, proxy: str | None):
